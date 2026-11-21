@@ -1,6 +1,6 @@
 import re
-import uuid
-import hashlib
+from pathlib import Path
+from docling.document_converter import DocumentConverter
 import unicodedata
 
 from sentence_transformers import SentenceTransformer
@@ -15,7 +15,7 @@ class IngestionPipeline:
         chunk_size: int = 1800,
         chunk_overlap: int = 200,
     ):
-
+        self.converter = DocumentConverter()
         if chunk_size <= 0 or not 0 <= chunk_overlap < chunk_size:
             raise ValueError("Invalid chunk size or overlap")
 
@@ -43,7 +43,108 @@ class IngestionPipeline:
 
         return text.strip()
 
-   
+    def parse_document(self, file_path: str, metadata: dict) -> dict:
+        """
+        Convert a PDF into structured document blocks.
+
+        metadata must come from the trusted backend:
+        document_id, tenant_id, owner_id, title, version, visibility.
+        """
+
+        path = Path(file_path)
+
+        if not path.exists() or not path.is_file():
+            raise FileNotFoundError(f"Document not found: {file_path}")
+
+        required = [
+            "document_id",
+            "tenant_id",
+            "owner_id",
+            "title",
+            "version",
+            "visibility",
+        ]
+
+        missing = [field for field in required if field not in metadata]
+
+        if missing:
+            raise ValueError(f"Missing metadata: {missing}")
+
+        if path.suffix.lower() != ".pdf":
+            raise ValueError("Currently only PDF files are supported")
+
+        # Convert PDF
+        result = self.converter.convert(str(path))
+        doc = result.document
+
+        if doc is None:
+            raise ValueError("Document parsing failed")
+
+        blocks = []
+
+        # Iterate through elements in document reading order
+        for item, hierarchy_level in doc.iterate_items():
+
+            label = getattr(item.label, "value", str(item.label)).lower()
+
+            # Extract page provenance
+            page_number = None
+
+            if item.prov:
+                page_number = item.prov[0].page_no
+
+            # Identify document element type
+            if label == "table":
+
+                # Preserve table structure instead of flattening it.
+                dataframe = item.export_to_dataframe(doc=doc)
+                content = dataframe.to_csv(index=False)
+                block_type = "table"
+                heading_level = 0
+
+            else:
+                content = getattr(item, "text", "")
+                heading_level = 0
+
+                if label == "section_header":
+                    block_type = "heading"
+                    heading_level = getattr(item, "level", 1) or 1
+
+                elif label == "title":
+                    block_type = "title"
+
+                elif label == "list_item":
+                    block_type = "list"
+
+                elif label == "caption":
+                    block_type = "caption"
+
+                else:
+                    block_type = "paragraph"
+
+            content = self.clean_text(content)
+
+            if not content:
+                continue
+
+            blocks.append({
+                "type": block_type,
+                "level": heading_level,
+                "content": content,
+                "page_number": page_number,
+                "source_label": label,
+            })
+
+        if not blocks:
+            raise ValueError("No extractable content found in PDF")
+
+        # Metadata is supplied by the trusted backend,
+        # not extracted from the uploaded document.
+        return {
+            **metadata,
+            "source": str(path.name),
+            "blocks": blocks,
+        }
     
     def chunk_document(self, document: dict) -> list[dict]:
 
@@ -90,43 +191,22 @@ class IngestionPipeline:
             show_progress_bar=False,
         )
 
-   
-        
 
+    def ingest_file(self, file_path: str, metadata: dict):
 
-    def ingest(self, document: dict):
+        # Stage 1: Parse
+        document = self.parse_document(file_path, metadata)
 
-        required = [
-            "document_id",
-            "tenant_id",
-            "owner_id",
-            "title",
-            "version",
-            "blocks",
-            "visibility",
-        ]
-
-        missing = [key for key in required if key not in document]
-
-        if missing:
-            raise ValueError(f"Missing document fields: {missing}")
-
-        if document["visibility"] not in {"private", "shared", "tenant"}:
-            raise ValueError("Invalid document visibility")
-
-        # Stage 1: Chunk
+        # Stage 2: Chunk
         chunks = self.chunk_document(document)
 
-        if not chunks:
-            raise ValueError("No content available for ingestion")
-
-        # Stage 2: Embed
+        # Stage 3: Embed
         embeddings = self.embed_chunks(chunks)
-
-        
 
         return {
             "document_id": document["document_id"],
+            "blocks_extracted": len(document["blocks"]),
             "chunks_created": len(chunks),
+            "embeddings_created": len(embeddings),
             "status": "pending",
         }
