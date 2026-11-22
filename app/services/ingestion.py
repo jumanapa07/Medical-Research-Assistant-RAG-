@@ -3,11 +3,15 @@ import re
 import unicodedata
 import uuid
 from pathlib import Path
-from typing import Callable, Optional, Protocol
+from typing import Callable, Optional
+
+from app.services.vector_store import VectorStore
 
 import numpy as np
 
 REQUIRED_METADATA = ["document_id", "tenant_id", "owner_id", "title", "version", "visibility"]
+# REQUIRED_METADATA = ["tenant_id"]
+
 
 SKIP_LABELS = {"page_header", "page_footer"}        # repeated noise on every page
 PROSE_TYPES = {"paragraph", "list", "caption", "footnote", "title"}
@@ -24,45 +28,6 @@ _PDF_FIXES = str.maketrans({
 })
 
 
-class VectorStore(Protocol):
-    """Minimal interface for stage 4. Implement for Qdrant / pgvector / OpenSearch."""
-
-    def upsert(self, chunks: list[dict], embeddings: np.ndarray) -> None: ...
-
-    def delete_document(self, tenant_id: str, document_id: str, keep_chunk_ids: set) -> int: ...
-
-
-class InMemoryVectorStore:
-    """Reference implementation used by the POC/tests. Always filters by tenant."""
-
-    def __init__(self):
-        self._rows: dict[str, tuple[dict, np.ndarray]] = {}
-
-    def upsert(self, chunks, embeddings):
-        for chunk, vec in zip(chunks, embeddings):
-            self._rows[chunk["chunk_id"]] = (chunk, np.asarray(vec))
-
-    def delete_document(self, tenant_id, document_id, keep_chunk_ids):
-        stale = [cid for cid, (c, _) in self._rows.items()
-                 if c["tenant_id"] == tenant_id and c["document_id"] == document_id
-                 and cid not in keep_chunk_ids]
-        for cid in stale:
-            del self._rows[cid]
-        return len(stale)
-
-    def search(self, query_vec, tenant_id, k=5):
-        rows = [(c, v) for c, v in self._rows.values() if c["tenant_id"] == tenant_id]
-        if not rows:
-            return []
-        scores = np.array([float(v @ query_vec) for _, v in rows])
-        order = np.argsort(-scores)[:k]
-        return [(rows[i][0], float(scores[i])) for i in order]
-
-    def count(self, tenant_id=None, document_id=None):
-        return sum(1 for c, _ in self._rows.values()
-                   if (tenant_id is None or c["tenant_id"] == tenant_id)
-                   and (document_id is None or c["document_id"] == document_id))
-
 
 class IngestionPipeline:
 
@@ -77,7 +42,6 @@ class IngestionPipeline:
         converter=None,              # injectable Docling DocumentConverter
         token_counter: Optional[Callable[[str], int]] = None,
         max_file_mb: int = 100,
-        query_instruction: Optional[str] = None,
     ):
         if chunk_size <= 0 or not 0 <= chunk_overlap < chunk_size // 2:
             raise ValueError("Invalid chunk size or overlap (overlap must be < chunk_size/2)")
