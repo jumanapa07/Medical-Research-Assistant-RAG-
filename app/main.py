@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.api.routes import auth,users
+from app.api.routes import auth,users,documents
 
 app = FastAPI(
     title="a Medical Reserach Assistant",
@@ -8,7 +8,7 @@ app = FastAPI(
 )
 app.include_router(auth.router)
 app.include_router(users.router)
-
+app.include_router(documents.router)
 @app.get("/")
 async def read_root():  
     return {"message": "Welcome to the Medical Research Assistant API!"}
