@@ -8,31 +8,27 @@ from qdrant_client import QdrantClient, models
 class VectorStore(Protocol):
     """Common interface for vector database implementations."""
 
-    def upsert(self, chunks: list[dict], embeddings: np.ndarray) -> None:
-        ...
+    def upsert(self, chunks: list[dict], embeddings: np.ndarray) -> None: ...
 
     def delete_document(
-        self,
-        tenant_id: str,
-        document_id: str,
-        keep_chunk_ids: set
-    ) -> int:
-        ...
+        self, tenant_id: str, document_id: str, keep_chunk_ids: set
+    ) -> int: ...
 
     def search(
         self,
         query_vec: np.ndarray,
         tenant_id: str,
-        k: int = 5
-    ) -> list:
-        ...
+        owner_id: str,
+        k: int = 5,
+    ) -> list[tuple[dict, float]]: ...
 
-    def count(
+    def get_chunks(
         self,
-        tenant_id: str = None,
-        document_id: str = None
-    ) -> int:
-        ...
+        tenant_id: str,
+        owner_id: str,
+    ) -> list[dict]: ...
+    
+    def count(self, tenant_id: str = None, document_id: str = None) -> int: ...
 
 
 class InMemoryVectorStore:
@@ -48,7 +44,7 @@ class InMemoryVectorStore:
         for chunk, vector in zip(chunks, embeddings):
             self._rows[chunk["chunk_id"]] = (
                 chunk,
-                np.asarray(vector, dtype=np.float32)
+                np.asarray(vector, dtype=np.float32),
             )
 
     def delete_document(self, tenant_id, document_id, keep_chunk_ids):
@@ -65,27 +61,23 @@ class InMemoryVectorStore:
 
         return len(stale)
 
-    def search(self, query_vec, tenant_id, k=5):
+    def search(self, query_vec, tenant_id, owner_id, k=5):
+
         rows = [
             (chunk, vector)
             for chunk, vector in self._rows.values()
             if chunk["tenant_id"] == tenant_id
+            and (chunk["owner_id"] == owner_id or chunk["visibility"] == "public")
         ]
 
         if not rows:
             return []
 
-        scores = np.array([
-            float(vector @ query_vec)
-            for _, vector in rows
-        ])
+        scores = np.array([float(vector @ query_vec) for _, vector in rows])
 
         order = np.argsort(-scores)[:k]
 
-        return [
-            (rows[i][0], float(scores[i]))
-            for i in order
-        ]
+        return [(rows[i][0], float(scores[i])) for i in order]
 
     def count(self, tenant_id=None, document_id=None):
         return sum(
@@ -95,6 +87,16 @@ class InMemoryVectorStore:
             and (document_id is None or chunk["document_id"] == document_id)
         )
 
+    def get_chunks(self, tenant_id: str, owner_id: str) -> list[dict]:
+        return [
+            chunk
+            for chunk, _ in self._rows.values()
+            if chunk["tenant_id"] == tenant_id
+            and (
+                chunk["owner_id"] == owner_id
+                or chunk["visibility"] == "public"
+            )
+        ]
 
 class QdrantVectorStore:
     """Persistent vector storage using Qdrant."""
@@ -105,16 +107,13 @@ class QdrantVectorStore:
         vector_size: int,
         url: str = "http://localhost:6333",
         api_key: str = None,
-        batch_size: int = 100
+        batch_size: int = 100,
     ):
         self.collection_name = collection_name
         self.vector_size = vector_size
         self.batch_size = batch_size
 
-        self.client = QdrantClient(
-            url=url,
-            api_key=api_key
-        )
+        self.client = QdrantClient(url=url, api_key=api_key)
 
         self._initialize_collection()
 
@@ -122,17 +121,15 @@ class QdrantVectorStore:
         collections = self.client.get_collections().collections
 
         exists = any(
-            collection.name == self.collection_name
-            for collection in collections
+            collection.name == self.collection_name for collection in collections
         )
 
         if not exists:
             self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=models.VectorParams(
-                    size=self.vector_size,
-                    distance=models.Distance.COSINE
-                )
+                    size=self.vector_size, distance=models.Distance.COSINE
+                ),
             )
 
         info = self.client.get_collection(self.collection_name)
@@ -154,12 +151,12 @@ class QdrantVectorStore:
             "tenant_id",
             "owner_id",
             "visibility",
-            "version"
+            "version",
         ]:
             self.client.create_payload_index(
                 collection_name=self.collection_name,
                 field_name=field,
-                field_schema=models.PayloadSchemaType.KEYWORD
+                field_schema=models.PayloadSchemaType.KEYWORD,
             )
 
     def upsert(self, chunks, embeddings):
@@ -167,8 +164,8 @@ class QdrantVectorStore:
             raise ValueError("Chunks and embeddings count mismatch")
 
         for start in range(0, len(chunks), self.batch_size):
-            batch_chunks = chunks[start:start + self.batch_size]
-            batch_embeddings = embeddings[start:start + self.batch_size]
+            batch_chunks = chunks[start : start + self.batch_size]
+            batch_embeddings = embeddings[start : start + self.batch_size]
 
             points = []
 
@@ -181,37 +178,26 @@ class QdrantVectorStore:
                 if not np.isfinite(vector).all():
                     raise ValueError("Embedding contains invalid values")
 
-                point_id = str(
-                    uuid.uuid5(
-                        uuid.NAMESPACE_URL,
-                        chunk["chunk_id"]
-                    )
-                )
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, chunk["chunk_id"]))
 
                 points.append(
                     models.PointStruct(
-                        id=point_id,
-                        vector=vector.tolist(),
-                        payload=dict(chunk)
+                        id=point_id, vector=vector.tolist(), payload=dict(chunk)
                     )
                 )
 
             self.client.upsert(
-                collection_name=self.collection_name,
-                points=points,
-                wait=True
+                collection_name=self.collection_name, points=points, wait=True
             )
 
     def delete_document(self, tenant_id, document_id, keep_chunk_ids):
         conditions = [
             models.FieldCondition(
-                key="tenant_id",
-                match=models.MatchValue(value=tenant_id)
+                key="tenant_id", match=models.MatchValue(value=tenant_id)
             ),
             models.FieldCondition(
-                key="document_id",
-                match=models.MatchValue(value=document_id)
-            )
+                key="document_id", match=models.MatchValue(value=document_id)
+            ),
         ]
 
         if keep_chunk_ids:
@@ -220,7 +206,7 @@ class QdrantVectorStore:
                     must_not=[
                         models.FieldCondition(
                             key="chunk_id",
-                            match=models.MatchAny(any=list(keep_chunk_ids))
+                            match=models.MatchAny(any=list(keep_chunk_ids)),
                         )
                     ]
                 )
@@ -229,51 +215,87 @@ class QdrantVectorStore:
         query_filter = models.Filter(must=conditions)
 
         count = self.client.count(
-            collection_name=self.collection_name,
-            count_filter=query_filter,
-            exact=True
+            collection_name=self.collection_name, count_filter=query_filter, exact=True
         ).count
 
         self.client.delete(
             collection_name=self.collection_name,
-            points_selector=models.FilterSelector(
-                filter=query_filter
-            ),
-            wait=True
+            points_selector=models.FilterSelector(filter=query_filter),
+            wait=True,
         )
 
         return count
 
-    def search(self, query_vec, tenant_id, k=5):
-        query_vec = np.asarray(query_vec, dtype=np.float32)
+    def search(self, query_vec, tenant_id, owner_id, k=5):
 
-        if query_vec.shape != (self.vector_size,):
-            raise ValueError("Invalid query embedding dimension")
+        conditions = [
+            models.FieldCondition(
+                key="tenant_id", match=models.MatchValue(value=tenant_id)
+            ),
+            models.Filter(
+                should=[
+                    models.FieldCondition(
+                        key="owner_id", match=models.MatchValue(value=owner_id)
+                    ),
+                    models.FieldCondition(
+                        key="visibility", match=models.MatchValue(value="public")
+                    ),
+                ]
+            ),
+        ]
 
-        if not np.isfinite(query_vec).all():
-            raise ValueError("Query embedding contains invalid values")
-
-        query_filter = models.Filter(
-            must=[
-                models.FieldCondition(
-                    key="tenant_id",
-                    match=models.MatchValue(value=tenant_id)
-                )
-            ]
-        )
+        query_filter = models.Filter(must=conditions)
 
         results = self.client.query_points(
             collection_name=self.collection_name,
             query=query_vec.tolist(),
             query_filter=query_filter,
             limit=k,
-            with_payload=True
+            with_payload=True,
         )
 
-        return [
-            (point.payload, float(point.score))
-            for point in results.points
-        ]
+        return [(point.payload, float(point.score)) for point in results.points]
+
+    def get_chunks(self, tenant_id: str, owner_id: str) -> list[dict]:
+        access_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="tenant_id",
+                    match=models.MatchValue(value=tenant_id),
+                ),
+            ],
+            should=[
+                models.FieldCondition(
+                    key="owner_id",
+                    match=models.MatchValue(value=owner_id),
+                ),
+                models.FieldCondition(
+                    key="visibility",
+                    match=models.MatchValue(value="public"),
+                ),
+            ],
+            min_should=models.MinShould(required=1),
+        )
+
+        chunks = []
+        offset = None
+
+        while True:
+            points, offset = self.client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=access_filter,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+
+            chunks.extend(point.payload for point in points)
+
+            if offset is None:
+                break
+
+        return chunks
 
     def count(self, tenant_id=None, document_id=None):
         conditions = []
@@ -281,26 +303,19 @@ class QdrantVectorStore:
         if tenant_id is not None:
             conditions.append(
                 models.FieldCondition(
-                    key="tenant_id",
-                    match=models.MatchValue(value=tenant_id)
+                    key="tenant_id", match=models.MatchValue(value=tenant_id)
                 )
             )
 
         if document_id is not None:
             conditions.append(
                 models.FieldCondition(
-                    key="document_id",
-                    match=models.MatchValue(value=document_id)
+                    key="document_id", match=models.MatchValue(value=document_id)
                 )
             )
 
-        query_filter = (
-            models.Filter(must=conditions)
-            if conditions else None
-        )
+        query_filter = models.Filter(must=conditions) if conditions else None
 
         return self.client.count(
-            collection_name=self.collection_name,
-            count_filter=query_filter,
-            exact=True
+            collection_name=self.collection_name, count_filter=query_filter, exact=True
         ).count
