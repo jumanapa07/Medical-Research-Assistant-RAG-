@@ -10,6 +10,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -17,7 +18,7 @@ from app.api.dependencies import get_current_user
 from app.models.user import User
 from app.schemas.document import DocumentResponse
 from app.services.document_service import DocumentService
-
+from app.tasks.ingestion_tasks import process_document_task
 
 router = APIRouter(
     prefix="/documents",
@@ -37,19 +38,22 @@ def upload_document(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        return DocumentService.upload_document(
+        document = DocumentService.upload_document(
             db=db,
             file=file,
             user=current_user,
             title=title,
         )
 
+        process_document_task.delay(str(document.id))
+
+        return document
+
     except ValueError as error:
         raise HTTPException(
             status_code=400,
             detail=str(error),
         )
-
 
 @router.get(
     "/",

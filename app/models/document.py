@@ -1,4 +1,3 @@
-
 import uuid
 from datetime import datetime
 
@@ -11,7 +10,7 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
-
+from sqlalchemy import Text
 from app.core.database import Base
 
 
@@ -68,6 +67,10 @@ class Document(Base):
         nullable=False,
         default="uploaded",
         index=True,
+    )
+    error_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
     )
 
     visibility: Mapped[str] = mapped_column(
