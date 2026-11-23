@@ -1,10 +1,9 @@
-
+import re
 import os
 from typing import Any
 
 from dotenv import load_dotenv
 from openai import OpenAI
-
 
 load_dotenv()
 
@@ -73,11 +72,13 @@ Latest question:
         context_parts = []
         citations = []
 
-        for index, chunk in enumerate(chunks, start=1):
+        for chunk in chunks:
             content = chunk.get("text") or chunk.get("content", "")
 
             if not content:
                 continue
+
+            source_number = len(citations) + 1
 
             title = chunk.get("title", "Unknown document")
             page_start = chunk.get("page_start")
@@ -92,24 +93,58 @@ Latest question:
             else:
                 page_reference = str(page_start or "Unknown")
 
-            context_parts.append(
-                f"""
-[Source {index}]
-Title: {title}
-Page: {page_reference}
-Content:
-{content}
-"""
+            context_parts.append(f"""
+    [Source {source_number}]
+    Title: {title}
+    Page: {page_reference}
+    Content:
+    {content}
+    """)
+
+            citations.append(
+                {
+                    "source_number": source_number,
+                    "source_id": chunk.get("chunk_id"),
+                    "title": title,
+                    "page_start": page_start,
+                    "page_end": page_end,
+                }
             )
 
-            citations.append({
-                "source_id": chunk.get("chunk_id"),
-                "title": title,
-                "page_start": page_start,
-                "page_end": page_end,
-            })
-
         return "\n".join(context_parts), citations
+
+    def _validate_citations(
+        self,
+        answer: str,
+        available_citations: list[dict[str, Any]],
+    ) -> tuple[str, list[dict[str, Any]]]:
+
+        citation_map = {
+            citation["source_number"]: citation for citation in available_citations
+        }
+
+        used_numbers = set()
+
+        def replace_marker(match):
+            source_number = int(match.group(1))
+
+            if source_number not in citation_map:
+                return ""
+
+            used_numbers.add(source_number)
+            return match.group(0)
+
+        # Keep only markers that map to retrieved chunks.
+        validated_answer = re.sub(
+            r"\[Source\s+(\d+)\]",
+            replace_marker,
+            answer,
+            flags=re.IGNORECASE,
+        )
+
+        validated_citations = [citation_map[number] for number in sorted(used_numbers)]
+
+        return validated_answer, validated_citations
 
     def generate(
         self,
@@ -159,15 +194,18 @@ Rules:
             if role not in {"user", "assistant"}:
                 continue
 
-            input_messages.append({
-                "role": role,
-                "content": message.get("content", ""),
-            })
+            input_messages.append(
+                {
+                    "role": role,
+                    "content": message.get("content", ""),
+                }
+            )
 
         # Add the current question and retrieved research context.
-        input_messages.append({
-            "role": "user",
-            "content": f"""
+        input_messages.append(
+            {
+                "role": "user",
+                "content": f"""
 Retrieved research context:
 
 {context}
@@ -179,7 +217,8 @@ Current question:
 Answer the current question using the research context.
 Include source markers next to supporting claims.
 """,
-        })
+            }
+        )
 
         response = self.client.responses.create(
             model=self.model,
@@ -187,8 +226,13 @@ Include source markers next to supporting claims.
             input=input_messages,
         )
 
+        validated_answer, validated_citations = self._validate_citations(
+            answer=response.output_text,
+            available_citations=citations,
+        )
+
         return {
-            "answer": response.output_text,
-            "citations": citations,
+            "answer": validated_answer,
+            "citations": validated_citations,
             "model": self.model,
         }

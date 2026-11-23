@@ -19,6 +19,7 @@ from app.models.user import User
 from app.schemas.document import DocumentResponse
 from app.services.document_service import DocumentService
 from app.tasks.ingestion_tasks import process_document_task
+from app.core.rag import vector_store
 
 router = APIRouter(
     prefix="/documents",
@@ -93,3 +94,31 @@ def get_document(
         )
 
     return document
+
+
+@router.delete("/{document_id}")
+def delete_document(
+    document_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        return DocumentService.delete_document(
+            db=db,
+            document_id=document_id,
+            user=current_user,
+            vector_store=vector_store,
+        )
+
+    except ValueError:
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found",
+        )
+
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to delete document",
+        )
+

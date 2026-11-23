@@ -1,4 +1,5 @@
 from celery import shared_task
+from docx import document
 from sqlalchemy import select
 
 from app.core.database import SessionLocal
@@ -24,6 +25,12 @@ def process_document_task(self, document_id: str):
 
         if not document:
             return {"status": "not_found"}
+        
+        if document.status == "deleting":
+            return {"status": "deletion_in_progress"}
+
+        if document.status == "indexed":
+            return {"status": "already_indexed"}
 
         document.status = "processing"
         document.error_message = None

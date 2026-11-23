@@ -1,4 +1,3 @@
-
 import hashlib
 import os
 import uuid
@@ -11,14 +10,9 @@ from sqlalchemy.orm import Session
 
 from app.models.document import Document
 
+STORAGE_PATH = Path(os.getenv("DOCUMENT_STORAGE_PATH", "storage/documents"))
 
-STORAGE_PATH = Path(
-    os.getenv("DOCUMENT_STORAGE_PATH", "storage/documents")
-)
-
-MAX_FILE_SIZE = int(
-    os.getenv("MAX_FILE_SIZE_MB", "100")
-) * 1024 * 1024
+MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE_MB", "100")) * 1024 * 1024
 
 
 class DocumentService:
@@ -35,9 +29,7 @@ class DocumentService:
             raise ValueError("Filename is missing")
 
         # Accept PDF files only.
-        safe_filename = (
-            file.filename.replace("\\", "/").split("/")[-1]
-        )
+        safe_filename = file.filename.replace("\\", "/").split("/")[-1]
 
         if Path(safe_filename).suffix.lower() != ".pdf":
             raise ValueError("Only PDF files are supported")
@@ -68,9 +60,7 @@ class DocumentService:
                     file_size += len(chunk)
 
                     if file_size > MAX_FILE_SIZE:
-                        raise ValueError(
-                            "File exceeds the maximum allowed size"
-                        )
+                        raise ValueError("File exceeds the maximum allowed size")
 
                     file_hash.update(chunk)
                     output.write(chunk)
@@ -91,9 +81,7 @@ class DocumentService:
             )
 
             if existing:
-                raise ValueError(
-                    "You have already uploaded this document"
-                )
+                raise ValueError("You have already uploaded this document")
 
             document = Document(
                 id=document_id,
@@ -154,9 +142,81 @@ class DocumentService:
             select(Document).where(
                 Document.id == document_id,
                 Document.tenant_id == user.tenant_id,
-                (
-                    (Document.owner_id == user.id)
-                    | (Document.visibility == "public")
-                ),
+                ((Document.owner_id == user.id) | (Document.visibility == "public")),
             )
         )
+
+    @staticmethod
+    def delete_document(
+        db: Session,
+        document_id,
+        user,
+        vector_store,
+    ) -> dict:
+
+        document = db.scalar(
+            select(Document)
+            .where(
+                Document.id == document_id,
+                Document.tenant_id == user.tenant_id,
+                Document.owner_id == user.id,
+            )
+            .with_for_update()
+        )
+
+        if not document:
+            raise ValueError("Document not found")
+        
+        if document.status == "processing":
+            raise RuntimeError(
+                "Cannot delete a document while ingestion is running"
+            )
+
+        # Mark deletion as in progress.
+        document.status = "deleting"
+        document.error_message = None
+        db.commit()
+
+        try:
+            # 1. Remove all vectors belonging to this document.
+            vector_store.delete_document(
+                tenant_id=str(document.tenant_id),
+                document_id=str(document.id),
+                keep_chunk_ids=set(),
+            )
+
+            # 2. Remove the physical PDF.
+            file_path = Path(document.file_path)
+
+            if file_path.exists():
+                file_path.unlink()
+
+            # 3. Remove PostgreSQL record.
+            db.delete(document)
+            db.commit()
+
+            return {
+                "document_id": str(document_id),
+                "status": "deleted",
+            }
+
+        except Exception as error:
+            db.rollback()
+
+            # Keep the record so deletion can be retried.
+            existing_document = db.scalar(
+                select(Document).where(
+                    Document.id == document_id,
+                    Document.tenant_id == user.tenant_id,
+                    Document.owner_id == user.id,
+                )
+            )
+
+            if existing_document:
+                existing_document.status = "failed"
+                existing_document.error_message = (
+                    f"Deletion failed: {str(error)[:3900]}"
+                )
+                db.commit()
+
+            raise
