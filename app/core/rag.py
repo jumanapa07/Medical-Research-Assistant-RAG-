@@ -4,6 +4,8 @@ from app.services.ingestion_service import DocumentIngestionService
 from app.services.retriever import Retriever
 from app.services.generation import GenerationService
 
+from sentence_transformers import SentenceTransformer
+
 pipeline = IngestionPipeline(
     collection_name="medical_research",
     embedding_model="BAAI/bge-small-en-v1.5",
