@@ -73,6 +73,39 @@ class ChatService:
             ).all()
         )
 
+    
+    def _get_recent_history(
+        self,
+        db: Session,
+        conversation: Conversation,
+        limit: int = 10,
+    ) -> list[dict[str, str]]:
+        messages = list(
+            db.scalars(
+                select(Message)
+                .where(
+                    Message.conversation_id == conversation.id
+                )
+                .order_by(
+                    Message.created_at.desc(),
+                    Message.id.desc(),
+                )
+                .limit(limit)
+            ).all()
+        )
+
+        # Reverse to restore chronological order.
+        messages.reverse()
+
+        return [
+            {
+                "role": message.role,
+                "content": message.content,
+            }
+            for message in messages
+            if message.role in {"user", "assistant"}
+        ]
+
     def send_message(
         self,
         db: Session,
@@ -80,7 +113,14 @@ class ChatService:
         user,
         question: str,
     ):
-        # Persist the user's question first.
+        # 1. Load previous messages before saving the new question.
+        history = self._get_recent_history(
+            db=db,
+            conversation=conversation,
+            limit=10,
+        )
+
+        # 2. Save the current user question.
         user_message = Message(
             conversation_id=conversation.id,
             role="user",
@@ -91,33 +131,47 @@ class ChatService:
         db.commit()
         db.refresh(user_message)
 
-        # Retrieve only chunks accessible to this user.
-        chunks = self.retriever.retrieve(
-            query=question,
-            tenant_id=str(user.tenant_id),
-            owner_id=str(user.id),
-        )
+        try:
+            # 3. Rewrite follow-up question for retrieval.
+            retrieval_query = self.generation_service.rewrite_query(
+                query=question,
+                conversation_history=history,
+            )
 
-        # Generate an answer using retrieved chunks.
-        result = self.generation_service.generate(
-            query=question,
-            chunks=chunks,
-        )
+            # 4. Retrieve relevant authorized chunks.
+            chunks = self.retriever.retrieve(
+                query=retrieval_query,
+                tenant_id=str(user.tenant_id),
+                owner_id=str(user.id),
+            )
 
-        assistant_message = Message(
-            conversation_id=conversation.id,
-            role="assistant",
-            content=result["answer"],
-            citations=result.get("citations", []),
-        )
+            # 5. Generate answer using original question,
+            #    conversation history and retrieved chunks.
+            result = self.generation_service.generate(
+                query=question,
+                chunks=chunks,
+                conversation_history=history,
+            )
 
-        db.add(assistant_message)
-        db.commit()
-        db.refresh(assistant_message)
+            # 6. Save assistant response.
+            assistant_message = Message(
+                conversation_id=conversation.id,
+                role="assistant",
+                content=result["answer"],
+                citations=result.get("citations", []),
+            )
 
-        return {
-            "user_message": user_message,
-            "assistant_message": assistant_message,
-            "answer": result["answer"],
-            "citations": result.get("citations", []),
-        }
+            db.add(assistant_message)
+            db.commit()
+            db.refresh(assistant_message)
+
+            return {
+                "user_message": user_message,
+                "assistant_message": assistant_message,
+                "answer": result["answer"],
+                "citations": result.get("citations", []),
+            }
+
+        except Exception:
+            db.rollback()
+            raise
