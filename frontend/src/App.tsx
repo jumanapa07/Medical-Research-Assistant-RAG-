@@ -7,6 +7,7 @@ import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import Documents from "./pages/Documents";
+import Chat from "./pages/Chat";
 
 function App() {
   return (
@@ -19,9 +20,11 @@ function App() {
           <Route element={<ProtectedRoute />}>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/documents" element={<Documents />} />
+            <Route path="/chat" element={<Chat />} />
           </Route>
 
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </AuthProvider>
     </BrowserRouter>

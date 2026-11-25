@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { documentService } from "../services/documentService";
-import { useAuth } from "../context/AuthContext";
 import type { Document } from "../types/document";
 import axios from "axios";
+import AppHeader from "../components/AppHeader";
 
 function formatFileSize(bytes: number) {
   if (bytes < 1024 * 1024) {
@@ -14,33 +13,33 @@ function formatFileSize(bytes: number) {
 }
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleDateString();
+  return new Date(value).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
+const statusStyles: Record<string, { dot: string; label: string }> = {
+  uploaded: { dot: "bg-slate-400", label: "Queued" },
+  processing: { dot: "bg-amber-500 animate-pulse", label: "Processing" },
+  completed: { dot: "bg-emerald-500", label: "Ready" },
+  failed: { dot: "bg-red-500", label: "Failed" },
+  deleting: { dot: "bg-slate-400 animate-pulse", label: "Deleting" },
+};
+
 function StatusBadge({ status }: { status: Document["status"] }) {
-  const styles: Record<string, string> = {
-    uploaded: "bg-slate-100 text-slate-700",
-    processing: "bg-blue-100 text-blue-700",
-    completed: "bg-green-100 text-green-700",
-    failed: "bg-red-100 text-red-700",
-    deleting: "bg-amber-100 text-amber-700",
-  };
+  const style = statusStyles[status] ?? { dot: "bg-slate-400", label: status };
 
   return (
-    <span
-      className={`rounded-full px-3 py-1 text-xs font-medium ${
-        styles[status] ?? "bg-slate-100 text-slate-700"
-      }`}
-    >
-      {status}
+    <span className="inline-flex items-center gap-2 text-sm text-slate-600">
+      <span className={`h-2 w-2 rounded-full ${style.dot}`} />
+      {style.label}
     </span>
   );
 }
 
 export default function Documents() {
-  const navigate = useNavigate();
-  const { logout } = useAuth();
-
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -100,9 +99,7 @@ export default function Documents() {
       await loadDocuments();
     } catch (err) {
       if (axios.isAxiosError(err)) {
-        setError(
-          err.response?.data?.detail || "Document upload failed."
-        );
+        setError(err.response?.data?.detail || "Document upload failed.");
       } else {
         setError("Document upload failed.");
       }
@@ -113,7 +110,7 @@ export default function Documents() {
 
   const handleDelete = async (documentId: string) => {
     const confirmed = window.confirm(
-      "Are you sure you want to delete this document?"
+      "Delete this document? This also removes it from the assistant's sources."
     );
 
     if (!confirmed) return;
@@ -123,9 +120,7 @@ export default function Documents() {
       await loadDocuments();
     } catch (err) {
       if (axios.isAxiosError(err)) {
-        setError(
-          err.response?.data?.detail || "Unable to delete document."
-        );
+        setError(err.response?.data?.detail || "Unable to delete document.");
       } else {
         setError("Unable to delete document.");
       }
@@ -134,152 +129,119 @@ export default function Documents() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-          <div>
-            <h1 className="text-xl font-bold text-slate-900">
-              Medical Research Assistant
-            </h1>
-            <p className="text-sm text-slate-500">
-              Research document workspace
-            </p>
-          </div>
+      <AppHeader />
 
-          <div className="flex gap-3">
-            <button
-              onClick={() => navigate("/dashboard")}
-              className="rounded-lg border px-4 py-2 text-sm hover:bg-slate-50"
-            >
-              Dashboard
-            </button>
+      <main className="mx-auto max-w-6xl px-6 py-10">
+        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
+          Documents
+        </h1>
+        <p className="mt-1.5 text-sm text-slate-500">
+          Papers you upload here are used to answer your questions.
+        </p>
 
-            <button
-              onClick={logout}
-              className="rounded-lg border px-4 py-2 text-sm hover:bg-slate-50"
-            >
-              Logout
-            </button>
-          </div>
-        </div>
-      </header>
+        <section className="mt-8 rounded-xl border border-slate-200 bg-white p-6">
+          <h2 className="text-sm font-semibold text-slate-900">Upload a paper</h2>
+          <p className="mt-1 text-sm text-slate-500">PDF files only.</p>
 
-      <main className="mx-auto max-w-6xl px-6 py-8">
-        <div className="mb-8">
-          <h2 className="text-2xl font-bold text-slate-900">
-            Research Documents
-          </h2>
-          <p className="mt-2 text-slate-500">
-            Upload and manage the documents used by your research assistant.
-          </p>
-        </div>
-
-        <section className="rounded-xl border border-slate-200 bg-white p-6">
-          <h3 className="font-semibold text-slate-900">
-            Upload a research paper
-          </h3>
-
-          <p className="mt-1 text-sm text-slate-500">
-            Select a PDF file to add it to your research workspace.
-          </p>
-
-          <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
             <input
               id="document-file"
               type="file"
               accept=".pdf,application/pdf"
-              onChange={(e) =>
-                setSelectedFile(e.target.files?.[0] ?? null)
-              }
-              className="block w-full rounded-lg border border-slate-300 p-2 text-sm"
+              onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
+              className="block w-full rounded-lg border border-slate-300 bg-white p-1.5 text-sm text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-slate-700 hover:file:bg-slate-200"
             />
 
             <button
               onClick={handleUpload}
               disabled={!selectedFile || uploading}
-              className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              className="shrink-0 rounded-lg bg-teal-700 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {uploading ? "Uploading..." : "Upload PDF"}
+              {uploading ? "Uploading..." : "Upload"}
             </button>
           </div>
         </section>
 
         {error && (
-          <div className="mt-5 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          <div
+            role="alert"
+            className="mt-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+          >
             {error}
           </div>
         )}
 
-        <section className="mt-8">
-          <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-slate-900">
+        <section className="mt-10">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-slate-900">
               Your documents
-            </h3>
+              {documents.length > 0 && (
+                <span className="ml-2 font-normal text-slate-400">
+                  {documents.length}
+                </span>
+              )}
+            </h2>
 
             <button
               onClick={loadDocuments}
-              className="text-sm font-medium text-blue-600 hover:text-blue-700"
+              className="text-sm font-medium text-slate-600 hover:text-slate-900"
             >
               Refresh
             </button>
           </div>
 
           {loading ? (
-            <p className="py-10 text-center text-slate-500">
+            <p className="py-12 text-center text-sm text-slate-500">
               Loading documents...
             </p>
           ) : documents.length === 0 ? (
             <div className="rounded-xl border border-dashed border-slate-300 bg-white py-14 text-center">
-              <p className="font-medium text-slate-700">
-                No documents uploaded yet
+              <p className="text-sm font-medium text-slate-900">
+                No documents yet
               </p>
-              <p className="mt-2 text-sm text-slate-500">
-                Upload a PDF to begin building your research library.
+              <p className="mt-1 text-sm text-slate-500">
+                Upload a PDF above to start building your library.
               </p>
             </div>
           ) : (
-            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-              <div className="divide-y divide-slate-200">
-                {documents.map((doc) => (
-                  <div
-                    key={doc.id}
-                    className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate font-medium text-slate-900">
-                        {doc.title || doc.original_filename}
+            <ul className="divide-y divide-slate-200 overflow-hidden rounded-xl border border-slate-200 bg-white">
+              {documents.map((doc) => (
+                <li
+                  key={doc.id}
+                  className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-slate-900">
+                      {doc.title || doc.original_filename}
+                    </p>
+                    <p className="mt-0.5 truncate text-sm text-slate-500">
+                      {doc.original_filename} · {formatFileSize(doc.file_size)} ·{" "}
+                      {formatDate(doc.created_at)}
+                    </p>
+
+                    {doc.status === "failed" && doc.error_message && (
+                      <p className="mt-1.5 text-sm text-red-600">
+                        {doc.error_message}
                       </p>
-
-                      <p className="mt-1 text-sm text-slate-500">
-                        {doc.original_filename} ·{" "}
-                        {formatFileSize(doc.file_size)} ·{" "}
-                        {formatDate(doc.created_at)}
-                      </p>
-
-                      {doc.status === "failed" && doc.error_message && (
-                        <p className="mt-2 text-sm text-red-600">
-                          {doc.error_message}
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-4">
-                      <StatusBadge status={doc.status} />
-
-                      <button
-                        onClick={() => handleDelete(doc.id)}
-                        disabled={
-                          doc.status === "processing" ||
-                          doc.status === "deleting"
-                        }
-                        className="text-sm font-medium text-red-600 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        Delete
-                      </button>
-                    </div>
+                    )}
                   </div>
-                ))}
-              </div>
-            </div>
+
+                  <div className="flex shrink-0 items-center gap-6">
+                    <StatusBadge status={doc.status} />
+
+                    <button
+                      onClick={() => handleDelete(doc.id)}
+                      disabled={
+                        doc.status === "processing" || doc.status === "deleting"
+                      }
+                      className="text-sm font-medium text-slate-500 transition hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-slate-500"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
           )}
         </section>
       </main>
