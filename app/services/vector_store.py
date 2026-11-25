@@ -274,7 +274,6 @@ class QdrantVectorStore:
                     match=models.MatchValue(value="public"),
                 ),
             ],
-            min_should=models.MinShould(required=1),
         )
 
         chunks = []

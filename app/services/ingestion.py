@@ -9,7 +9,7 @@ from app.services.vector_store import VectorStore
 
 import numpy as np
 
-REQUIRED_METADATA = ["document_id", "tenant_id", "owner_id", "title", "version", "visibility"]
+REQUIRED_METADATA = ["tenant_id", "owner_id"]
 # REQUIRED_METADATA = ["tenant_id"]
 
 

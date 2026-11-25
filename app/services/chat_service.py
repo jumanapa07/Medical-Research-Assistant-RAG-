@@ -141,8 +141,10 @@ class ChatService:
             # 4. Retrieve relevant authorized chunks.
             chunks = self.retriever.retrieve(
                 query=retrieval_query,
-                tenant_id=str(user.tenant_id),
-                owner_id=str(user.id),
+                metadata={
+                    "tenant_id": str(user.tenant_id),
+                    "owner_id": str(user.id),
+                },
             )
 
             # 5. Generate answer using original question,
